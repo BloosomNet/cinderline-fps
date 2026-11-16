@@ -1,8 +1,7 @@
 // weapons.js — gunplay and grenades, shared verbatim by the player and the bots: the same
-// hitscan, spread, recoil and damage code resolves every shot in the game, so a bot's rifle
-// obeys exactly the rules the player's does. Spread is the tactical heart: it grows with
-// per-shot bloom, with movement, and in the air, and shrinks when crouched — standing still
-// and aiming is measurably better than running and spraying. Head hits pay triple.
+// hitscan, spread, recoil and damage code resolves every shot in the game. Spread is the
+// tactical heart: it grows with per-shot bloom, movement and air time, and shrinks when
+// crouched — standing still and aiming beats running and spraying. Head hits pay triple.
 
 import { S } from './state.js';
 import { clamp } from './rng.js';
@@ -80,8 +79,6 @@ export function applyDamage(attacker, target, dmg, part) {
         if (marks[i].type === 'hitmark') { marks[i].kill = true; break; }
       }
       audio.playHit(true);
-    } else if (attacker) {
-      // a bot scored the kill; nothing local to play beyond the shot itself
     }
     S.events.push({ type: 'kill', attacker, victim: target, headshot: !!part && part.name === 'head' });
   } else if (attacker === S.player) {

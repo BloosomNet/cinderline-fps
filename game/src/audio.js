@@ -1,7 +1,6 @@
 // audio.js — every sound in CINDERLINE is synthesized with WebAudio; the game ships no audio
 // files. The context is created lazily on the first user gesture (browsers require one), and
-// every function here is a no-op until then, so headless renders and screenshot scenes stay
-// silent and error-free.
+// every function here is a no-op until then, so headless renders stay silent and error-free.
 
 let ctx = null;
 let master = null;

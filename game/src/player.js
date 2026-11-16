@@ -1,8 +1,7 @@
 // player.js — movement physics shared by the player and every bot, the player's own controller
 // (keyboard/mouse, or the bot brain in demo mode), and the first-person camera + viewmodel.
-// Physics is deliberately simple and identical for everyone: exponential velocity approach
-// (acceleration and friction in one), gravity, a jump, and circle-vs-box collision with a
-// 0.55 m step-up so the dock platform and low crates can be mounted without a jump.
+// Physics is deliberately simple and identical for everyone: exponential velocity approach,
+// gravity, a jump, and circle-vs-box collision with a 0.55 m step-up onto low cover.
 
 import * as THREE from 'three';
 import { S } from './state.js';
@@ -77,7 +76,7 @@ export function eyeHeight(c) {
   return c.crouching ? EYE_CROUCH : EYE;
 }
 
-// ---------------------------------------------------------------- player controller
+// ---- player controller
 
 const mouse = { x: 0, y: 0 };
 let bobPhase = 0;
@@ -119,7 +118,7 @@ export function updatePlayer(dt) {
   bobPhase += p.speed2d * dt * 1.7;
 }
 
-// ---------------------------------------------------------------- viewmodel + camera
+// ---- viewmodel + camera
 
 let viewGroup = null;
 let gunMeshes = {};

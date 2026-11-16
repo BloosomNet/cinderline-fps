@@ -19,29 +19,6 @@ export class Rng {
   reseed(seed) {
     this.next = mulberry32(seed);
   }
-  // float in [0, 1)
-  f() {
-    return this.next();
-  }
-  // float in [min, max)
-  range(min, max) {
-    return min + this.next() * (max - min);
-  }
-  // integer in [min, max]
-  int(min, max) {
-    return min + Math.floor(this.next() * (max - min + 1));
-  }
-  // -1 or +1
-  sign() {
-    return this.next() < 0.5 ? -1 : 1;
-  }
-  pick(list) {
-    return list[Math.floor(this.next() * list.length)];
-  }
-  // true with probability p
-  chance(p) {
-    return this.next() < p;
-  }
 }
 
 export const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);

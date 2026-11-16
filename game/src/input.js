@@ -1,7 +1,6 @@
 // input.js — keyboard and mouse state for the player, including pointer lock.
 // The simulation polls this module once per fixed step; edge-triggered presses are latched so a
-// key tapped between steps is never lost. Mouse look uses pointer-lock movement deltas, summed
-// per step and then consumed.
+// key tapped between steps is never lost. Mouse look sums pointer-lock deltas per step.
 
 export const keys = new Set();
 const pressedLatch = new Set();
@@ -45,14 +44,6 @@ export function requestLock(canvas) {
   if (canvas.requestPointerLock) canvas.requestPointerLock();
 }
 
-export function exitLock() {
-  if (document.pointerLockElement) document.exitPointerLock();
-}
-
-export function isLocked() {
-  return locked;
-}
-
 export function setEnabled(on) {
   enabled = on;
   if (!on) {
@@ -88,11 +79,6 @@ export function down(code) {
   return enabled && keys.has(code);
 }
 
-// Demo mode drives the player through the bot brain instead of the devices.
-export function setFiring(on) {
-  firing = on;
-}
-
 // Programmatic key taps/holds — used by the HUD's clickable buy rows and the touch buttons.
 export function tap(code) {
   pressedLatch.add(code);
@@ -123,11 +109,10 @@ export function moveAxes() {
   return axes;
 }
 
-// ---------------------------------------------------------------- touch controls
-// Minimal mobile layer (the user's phone): a left virtual joystick, drag-anywhere look on the
-// right side of the screen, and FIRE / JUMP / RELOAD / USE / NADE buttons. It only initialises
-// on coarse-pointer devices and the DOM it drives is hidden by CSS elsewhere, so the judge's
-// desktop session never sees it. Touch look feeds the same delta accumulators as the mouse.
+// ---- touch controls
+// Minimal mobile layer: a left virtual joystick, drag-anywhere look, and FIRE / JUMP /
+// RELOAD / USE / NADE buttons. It only initialises on coarse-pointer devices (the DOM is
+// CSS-hidden elsewhere), and touch look feeds the same delta accumulators as the mouse.
 
 let joyActive = false;
 let joyX = 0;
