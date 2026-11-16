@@ -1,8 +1,8 @@
 // hud.js — every piece of DOM the player reads: vitals, ammo, money, the round clock and
 // score, a live minimap, killfeed, hitmarkers, hurt direction, the plant/defuse channel bar,
-// the buy menu, and the banners that announce round and match results. The simulation never
-// touches the DOM; this module reads S once per frame and drains S.events for the transient
-// stuff (kills, hits, plants). Values are cached so unchanged text is never re-written.
+// the buy menu, and the result banners. The simulation never touches the DOM; this module
+// reads S once per frame and drains S.events for the transient stuff (kills, hits, plants).
+// Values are cached so unchanged text is never re-written.
 
 import { S, ROUND } from './state.js';
 import { WEAPONS, ARMOR, GRENADE } from './weapons.js';
@@ -17,6 +17,7 @@ let hitUntil = 0;
 let hitKill = false;
 let hurtUntil = 0;
 let mapT = 0;
+let playerRoundKills = 0; // the player's kills this round, for the banner callout
 
 function grab(id) {
   el[id] = document.getElementById(id);
@@ -88,6 +89,7 @@ function showBanner(title, sub, seconds) {
 
 function feedEvent(ev) {
   if (ev.type === 'kill') {
+    if (ev.attacker === S.player) playerRoundKills++;
     const div = document.createElement('div');
     div.className = 'feed-row';
     const a = ev.attacker ? ev.attacker.name : '—';
@@ -118,11 +120,16 @@ function feedEvent(ev) {
       defused: 'The charge was defused',
       time: 'The clock ran out on Ember',
     };
-    showBanner(emberWon ? 'EMBER TAKES THE ROUND' : 'WARD HOLDS THE LINE', reasons[ev.reason] || '', 3.4);
+    // A multi-kill round by the player earns its own line under the result.
+    const feat = playerRoundKills >= 4 ? ' · ACE — you dropped all four'
+      : playerRoundKills === 3 ? ' · Triple kill'
+      : playerRoundKills === 2 ? ' · Double kill' : '';
+    showBanner(emberWon ? 'EMBER TAKES THE ROUND' : 'WARD HOLDS THE LINE', (reasons[ev.reason] || '') + feat, 3.4);
   } else if (ev.type === 'matchEnd') {
     showBanner(ev.winner === 'ember' ? 'EMBER WINS THE MATCH' : 'WARD WINS THE MATCH',
       `Final score ${S.scores.ember} — ${S.scores.ward}`, 6);
   } else if (ev.type === 'roundStart') {
+    playerRoundKills = 0;
     showBanner(`ROUND ${ev.round}`, `Ember to plant at site ${ev.target}`, 1.6);
   }
 }

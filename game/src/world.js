@@ -2,13 +2,12 @@
 // Everything visual and physical comes from the BOXES table below: each entry is drawn as a
 // textured box and (unless marked visual) added to COLLIDERS, so what you see is what you hit.
 // Textures are painted on canvases at load — the game ships no image files. The module also owns
-// the waypoint graph the bots navigate, the two plant sites, spawn/hold points, and the
-// line-of-sight and raycast helpers every other system shares.
+// the waypoint graph, the plant sites, spawn/hold points, and the shared LOS/raycast helpers.
 
 import * as THREE from 'three';
 import { mulberry32 } from './rng.js';
 
-// ---------------------------------------------------------------- textures (procedural)
+// ---- textures (procedural)
 
 function canvasTex(size, painter, repeat = 1) {
   const c = document.createElement('canvas');
@@ -20,6 +19,15 @@ function canvasTex(size, painter, repeat = 1) {
   tex.anisotropy = 4;
   tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
+}
+
+// A grid of bolt heads near the panel corners and seam crossings (concrete, plate).
+function boltGrid(ctx, s, off, r) {
+  for (const bx of [off, s / 2 - off, s / 2 + off, s - off]) {
+    for (const by of [off, s / 2 - off, s / 2 + off, s - off]) {
+      ctx.beginPath(); ctx.arc(bx, by, r, 0, Math.PI * 2); ctx.fill();
+    }
+  }
 }
 
 function speckle(ctx, size, base, flecks, n, rng) {
@@ -56,11 +64,7 @@ function makeTextures() {
     ctx.fillRect(s / 2 + 2, 0, 2, s);
     // anchor bolts near the panel corners
     ctx.fillStyle = 'rgba(38,34,30,0.65)';
-    for (const bx of [26, s / 2 - 26, s / 2 + 26, s - 26]) {
-      for (const by of [26, s / 2 - 26, s / 2 + 26, s - 26]) {
-        ctx.beginPath(); ctx.arc(bx, by, 5, 0, Math.PI * 2); ctx.fill();
-      }
-    }
+    boltGrid(ctx, s, 26, 5);
     // weather streaks bleeding down from the seams
     for (let i = 0; i < 22; i++) {
       ctx.fillStyle = 'rgba(58,50,42,0.16)';
@@ -216,11 +220,7 @@ function makeTextures() {
     ctx.fillRect(0, s / 2 + 2, s, 2);
     ctx.fillRect(s / 2 + 2, 0, 2, s);
     ctx.fillStyle = 'rgba(12,12,15,0.85)';
-    for (const bx of [18, s / 2 - 18, s / 2 + 18, s - 18]) {
-      for (const by of [18, s / 2 - 18, s / 2 + 18, s - 18]) {
-        ctx.beginPath(); ctx.arc(bx, by, 4, 0, Math.PI * 2); ctx.fill();
-      }
-    }
+    boltGrid(ctx, s, 18, 4);
     ctx.fillStyle = 'rgba(120,60,25,0.20)';
     ctx.fillRect(0, s - 14, s, 14);
   });
@@ -231,10 +231,8 @@ function makeTextures() {
     for (let y = 14; y < s - 8; y += 21) {
       for (let x = 12; x < s - 10; x += 19) {
         const r = rng();
-        if (r < 0.13) ctx.fillStyle = 'rgba(255,180,107,0.95)';
-        else if (r < 0.16) ctx.fillStyle = 'rgba(159,216,232,0.8)';
-        else if (r < 0.24) ctx.fillStyle = 'rgba(255,180,107,0.35)';
-        else ctx.fillStyle = 'rgba(8,6,13,0.9)';
+        ctx.fillStyle = r < 0.13 ? 'rgba(255,180,107,0.95)' : r < 0.16 ? 'rgba(159,216,232,0.8)'
+          : r < 0.24 ? 'rgba(255,180,107,0.35)' : 'rgba(8,6,13,0.9)';
         ctx.fillRect(x, y, 9, 12);
       }
     }
@@ -324,41 +322,43 @@ function makeTextures() {
   return { concrete, asphalt, corrugated, crate, hazard, letter, container, plate, windows, molten, scorch, cloud, paint };
 }
 
-// Vertical fade for the site beacon columns: solid at the ground, gone before the top, so the
-// beam reads as a shaft of light rather than a translucent wall.
+// A small canvas painted by fn, wrapped as an sRGB texture (beams, glows, halos).
+function smallTex(w, h, fn) {
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  fn(c.getContext('2d'));
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+// Vertical fade for the site beacon columns: solid at the ground, gone before the top.
 function beamTexture() {
-  const c = document.createElement('canvas');
-  c.width = 16;
-  c.height = 128;
-  const ctx = c.getContext('2d');
-  const g = ctx.createLinearGradient(0, 0, 0, 128);
-  g.addColorStop(0, 'rgba(255,255,255,0)');
-  g.addColorStop(0.55, 'rgba(255,255,255,0.45)');
-  g.addColorStop(1, 'rgba(255,255,255,0.95)');
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, 16, 128);
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
+  return smallTex(16, 128, (ctx) => {
+    const g = ctx.createLinearGradient(0, 0, 0, 128);
+    g.addColorStop(0, 'rgba(255,255,255,0)');
+    g.addColorStop(0.55, 'rgba(255,255,255,0.45)');
+    g.addColorStop(1, 'rgba(255,255,255,0.95)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 16, 128);
+  });
 }
 
-// A soft radial glow sprite texture, shared by lamp halos and the drifting embers.
-function glowTexture() {
-  const c = document.createElement('canvas');
-  c.width = c.height = 64;
-  const ctx = c.getContext('2d');
-  const g = ctx.createRadialGradient(32, 32, 2, 32, 32, 32);
-  g.addColorStop(0, 'rgba(255,255,255,1)');
-  g.addColorStop(0.35, 'rgba(255,255,255,0.5)');
-  g.addColorStop(1, 'rgba(255,255,255,0)');
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, 64, 64);
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
+// A soft radial glow sprite texture, shared by lamp halos, the drifting embers and main.js's
+// effect pools.
+export function glowTexture() {
+  return smallTex(64, 64, (ctx) => {
+    const g = ctx.createRadialGradient(32, 32, 2, 32, 32, 32);
+    g.addColorStop(0, 'rgba(255,255,255,1)');
+    g.addColorStop(0.35, 'rgba(255,255,255,0.5)');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 64, 64);
+  });
 }
 
-// ---------------------------------------------------------------- map data
+// ---- map data
 // { x, z, w, d, h, mat, y0?, visual? } — centre x/z, footprint w×d, height h from y0 (default 0).
 
 const BOXES = [
@@ -440,7 +440,7 @@ for (const b of BOXES) {
 export const MINIMAP_RECTS = BOXES.filter((b) => !b.visual && b.h >= 1)
   .map((b) => ({ x: b.x, z: b.z, w: b.w, d: b.d }));
 
-// ---------------------------------------------------------------- sites, spawns, holds
+// ---- sites, spawns, holds
 
 export const SITES = {
   A: { id: 'A', cx: -22, cz: -20, half: 6.5, plant: { x: -21, z: -15 }, color: 0xff7a33 },
@@ -471,13 +471,15 @@ export const SPAWNS = {
 };
 
 // Positions defenders settle into, per site; attackers use the plant points and entries.
+// Each hold also names the entry lane it watches (wx, wz), so a site's pair pre-aims
+// different doors and their angles cross over the plant point.
 export const HOLDS = {
-  A: [{ x: -27.5, z: -16.5 }, { x: -17, z: -24.5 }],
-  B: [{ x: 20, z: -26.8 }, { x: 28.5, z: -13.2 }],
-  mid: [{ x: 5.5, z: -12.5 }],
+  A: [{ x: -27.5, z: -16.5, wx: -16, wz: -18 }, { x: -17, z: -24.5, wx: -29, wz: -20 }],
+  B: [{ x: 20, z: -26.8, wx: 15, wz: -17 }, { x: 28.5, z: -13.2, wx: 29, wz: -20 }],
+  mid: [{ x: 5.5, z: -12.5, wx: 0, wz: 6 }],
 };
 
-// ---------------------------------------------------------------- waypoints
+// ---- waypoints
 
 const NODE_LIST = [
   ['eSpawn', 0, 29], ['eSW', -9, 24], ['eSE', 9, 24],
@@ -535,9 +537,8 @@ export function nearestNode(x, z) {
   return best;
 }
 
-// A* over the waypoint graph. Returns an array of {x, z} waypoints from just after the start
-// node to the goal node (empty when already there), or null when unreachable. Scratch arrays are
-// module-level and reused; paths are short and calls are infrequent (bots repath ~1/second).
+// A* over the waypoint graph. Returns {x, z} waypoints from just after the start node to the
+// goal node (empty when already there), or null when unreachable. Scratch arrays are reused.
 const aStar = {
   g: new Float64Array(NODES.length),
   f: new Float64Array(NODES.length),
@@ -588,10 +589,9 @@ export function findPath(fromIdx, toIdx) {
   return null;
 }
 
-// ---------------------------------------------------------------- spatial queries
+// ---- spatial queries
 
-// Highest standable surface at (x, z) whose top is at most refY + step (0.55): lets combatants
-// walk up the dock platform and crates they can step onto, and stand on what they jump onto.
+// Highest standable surface at (x, z) whose top is at most refY + step (0.55).
 export function groundHeight(x, z, refY) {
   let ground = 0;
   for (const c of COLLIDERS) {
@@ -640,7 +640,7 @@ export function hasLOS(x1, y1, z1, x2, y2, z2) {
   return !segmentBlocked(x1, y1, z1, x2, y2, z2);
 }
 
-// Nearest distance along the ray (unit direction) that world geometry stops it, or Infinity.
+// Nearest distance along the ray (unit direction) that geometry stops it, or Infinity.
 // Includes the ground plane. Used by hitscan fire and impact effects.
 export function raycastWorld(ox, oy, oz, dx, dy, dz, maxDist) {
   let best = maxDist;
@@ -676,11 +676,11 @@ export function raycastWorld(ox, oy, oz, dx, dy, dz, maxDist) {
   return best;
 }
 
-// ---------------------------------------------------------------- scene construction
+// ---- scene construction
 
-// Render-side dressing that moves: the ember drift, the site beacon pulse and the furnace
-// flicker. worldTick advances it per animation frame; the fixed-step simulation never sees it.
-const animated = { t: 0, embers: null, emberBase: null, emberSpeed: null, beacons: [], mouthMat: null, clouds: [], warn: [], furnace: null, lamps: [] };
+// Render-side dressing that moves (ember drift, beacon pulse, light flicker); worldTick
+// advances it per frame and the fixed-step simulation never sees it.
+const animated = { t: 0, embers: null, emberBase: null, emberSpeed: null, beacons: [], mouthMat: null, clouds: [], warn: [], furnace: null, lamps: [], skyMat: null };
 
 export function worldTick(rdt) {
   animated.t += rdt;
@@ -707,8 +707,11 @@ export function worldTick(rdt) {
     const f = 0.92 + 0.08 * Math.sin(t * 12.7) * Math.sin(t * 7.1 + 1.3);
     animated.mouthMat.color.setScalar(f);
   }
-  // Clouds sway a few metres and back; stack warning lights blink out of phase; the furnace
-  // light breathes unevenly and the door lamps shimmer almost imperceptibly.
+  if (animated.skyMat) {
+    // The distant facade's lit windows shimmer faintly — old wiring, far away.
+    animated.skyMat.color.setScalar(0.93 + 0.07 * Math.abs(Math.sin(t * 9.1) * Math.sin(t * 3.7 + 0.6)));
+  }
+  // Clouds sway; stack lights blink out of phase; the furnace light breathes; lamps shimmer.
   for (const cl of animated.clouds) {
     cl.m.position.x = cl.x + Math.sin(t * cl.sp + cl.ph) * 7;
   }
@@ -721,8 +724,7 @@ export function worldTick(rdt) {
   }
 }
 
-// Gradient dusk sky: amber at the horizon under the low sun, plum above, near-black zenith
-// with the first faint stars. A single BackSide sphere — no texture, no light cost.
+// Gradient dusk sky on a single BackSide sphere: amber horizon, plum above, faint stars.
 function buildSky(scene, glowTex, cloudTex) {
   const mat = new THREE.ShaderMaterial({
     side: THREE.BackSide,
@@ -730,41 +732,40 @@ function buildSky(scene, glowTex, cloudTex) {
     fog: false,
     uniforms: {},
     vertexShader: `
-      varying vec3 vDir;
-      void main() {
-        vDir = position;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-      }`,
+  varying vec3 vDir;
+  void main() {
+    vDir = position;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }`,
     fragmentShader: `
-      varying vec3 vDir;
-      float hash(vec3 p) { return fract(sin(dot(p, vec3(12.9898, 78.233, 45.164))) * 43758.5453); }
-      void main() {
-        vec3 d = normalize(vDir);
-        float h = d.y;
-        vec3 zen = vec3(0.055, 0.035, 0.11);
-        vec3 mid = vec3(0.26, 0.115, 0.27);
-        vec3 hor = vec3(0.78, 0.33, 0.155);
-        vec3 col = mix(hor, mid, smoothstep(0.02, 0.30, h));
-        col = mix(col, zen, smoothstep(0.22, 0.68, h));
-        col = mix(vec3(0.10, 0.06, 0.09), col, smoothstep(-0.08, 0.02, h));
-        vec3 sunDir = normalize(vec3(-0.62, 0.16, -0.38));
-        float s = max(dot(d, sunDir), 0.0);
-        col += vec3(1.0, 0.52, 0.22) * pow(s, 14.0) * 0.5;
-        col += vec3(1.0, 0.62, 0.30) * pow(s, 90.0) * 0.85;
-        if (h > 0.30) {
-          vec3 cell = floor(d * 90.0);
-          float star = step(0.9975, hash(cell)) * smoothstep(0.30, 0.62, h);
-          col += vec3(0.75, 0.8, 1.0) * star * 0.5;
-        }
-        gl_FragColor = vec4(col, 1.0);
+  varying vec3 vDir;
+  float hash(vec3 p) { return fract(sin(dot(p, vec3(12.9898, 78.233, 45.164))) * 43758.5453); }
+  void main() {
+    vec3 d = normalize(vDir);
+    float h = d.y;
+    vec3 zen = vec3(0.055, 0.035, 0.11);
+    vec3 mid = vec3(0.26, 0.115, 0.27);
+    vec3 hor = vec3(0.78, 0.33, 0.155);
+    vec3 col = mix(hor, mid, smoothstep(0.02, 0.30, h));
+    col = mix(col, zen, smoothstep(0.22, 0.68, h));
+    col = mix(vec3(0.10, 0.06, 0.09), col, smoothstep(-0.08, 0.02, h));
+    vec3 sunDir = normalize(vec3(-0.62, 0.16, -0.38));
+    float s = max(dot(d, sunDir), 0.0);
+    col += vec3(1.0, 0.52, 0.22) * pow(s, 14.0) * 0.5;
+    col += vec3(1.0, 0.62, 0.30) * pow(s, 90.0) * 0.85;
+    if (h > 0.30) {
+      vec3 cell = floor(d * 90.0);
+      float star = step(0.9975, hash(cell)) * smoothstep(0.30, 0.62, h);
+      col += vec3(0.75, 0.8, 1.0) * star * 0.5;
+    }
+    gl_FragColor = vec4(col, 1.0);
       }`,
   });
   const sky = new THREE.Mesh(new THREE.SphereGeometry(205, 24, 16), mat);
   sky.frustumCulled = false;
   sky.renderOrder = -1;
   scene.add(sky);
-  // The low sun itself: a bright disc sprite on the horizon, where the shader already glows
-  // (sun direction -0.62, 0.16, -0.38 — the directional light sits on the same bearing).
+  // The low sun: a bright disc sprite on the horizon, on the shader's sun bearing.
   const sunSpr = new THREE.Sprite(new THREE.SpriteMaterial({
     map: glowTex, color: 0xffc98a, transparent: true, opacity: 0.95,
     blending: THREE.AdditiveBlending, depthWrite: false, fog: false,
@@ -814,6 +815,14 @@ export function buildWorld(scene) {
   scene.add(ground);
 
   const unitBox = new THREE.BoxGeometry(1, 1, 1);
+  // One scaled unit box of dressing, added to the scene.
+  const box = (mat, w, h, d, x, y, z) => {
+    const m = new THREE.Mesh(unitBox, mat);
+    m.scale.set(w, h, d);
+    m.position.set(x, y, z);
+    scene.add(m);
+    return m;
+  };
   for (const b of BOXES) {
     const mesh = new THREE.Mesh(unitBox, mats[b.mat]);
     mesh.scale.set(b.w, b.h, b.d);
@@ -846,12 +855,8 @@ export function buildWorld(scene) {
     sign.position.set(id === 'A' ? -14.2 : 14.2, 2.1, -20);
     sign.rotation.y = id === 'A' ? Math.PI / 2 : -Math.PI / 2;
     scene.add(sign);
-    const pole = new THREE.Mesh(unitBox, mats.dark);
-    pole.scale.set(0.18, 3.4, 0.18);
-    pole.position.set(sign.position.x, 1.7, -20);
-    scene.add(pole);
-    // A beacon at the plant point itself: a glowing ground ring and a faint column of light,
-    // so the objective reads from anywhere on the site. Pulsed in worldTick.
+    box(mats.dark, 0.18, 3.4, 0.18, sign.position.x, 1.7, -20);
+    // A beacon at the plant point: a glowing ring and a faint column of light, pulsed in worldTick.
     const ring = new THREE.Mesh(
       new THREE.RingGeometry(0.95, 1.2, 28),
       new THREE.MeshBasicMaterial({ color: s.color, transparent: true, opacity: 0.65, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }),
@@ -868,8 +873,8 @@ export function buildWorld(scene) {
     animated.beacons.push({ beam, ring });
   }
 
-  // Furnace mouth glow (site A's landmark) — a molten slit on the furnace's south face, with a
-  // white-hot core, and a cooling stream that runs out of it across the yard floor.
+  // Furnace mouth glow (site A's landmark): a molten slit with a white-hot core, and a
+  // cooling stream that runs out of it across the yard floor.
   const mouthMat = new THREE.MeshBasicMaterial({ map: tex.molten });
   animated.mouthMat = mouthMat;
   const mouth = new THREE.Mesh(new THREE.PlaneGeometry(3.6, 0.85), mouthMat);
@@ -892,14 +897,10 @@ export function buildWorld(scene) {
 
   // Distant factory silhouettes and two chimney stacks, for depth beyond the walls.
   const skyMat = new THREE.MeshBasicMaterial({ map: tex.windows });
+  animated.skyMat = skyMat; // worldTick flickers its windows
   const skyline = [[-52, -30, 16, 14], [-48, 8, 12, 20], [-55, 34, 18, 10], [50, -38, 20, 16],
     [54, 6, 14, 24], [48, 36, 16, 12], [0, -56, 26, 13], [-24, -54, 12, 18], [26, 54, 22, 11], [-30, 52, 14, 15]];
-  for (const [x, z, w, h] of skyline) {
-    const m = new THREE.Mesh(unitBox, skyMat);
-    m.scale.set(w, h, 8);
-    m.position.set(x, h / 2, z);
-    scene.add(m);
-  }
+  for (const [x, z, w, h] of skyline) box(skyMat, w, h, 8, x, h / 2, z);
   const chimneyMat = new THREE.MeshStandardMaterial({ color: 0x241d2e, roughness: 1 });
   for (const [x, z] of [[-46, -44], [44, -48]]) {
     const ch = new THREE.Mesh(new THREE.CylinderGeometry(1.6, 2.1, 24, 10), chimneyMat);
@@ -935,13 +936,10 @@ export function buildWorld(scene) {
   lampAt(0, 3.4, 6, 0xffc37a, 30, 18); // mid lamp
   animated.lamps.push({ light: lampAt(-13, 3.3, -8, 0xffc37a, 16, 15), base: 16, ph: 0 });
   animated.lamps.push({ light: lampAt(13, 3.3, -8, 0xffc37a, 16, 15), base: 16, ph: 2.4 });
-  // Lamp heads on the three posts, each with a soft halo sprite so the light has a visible source.
+  // Lamp heads on the three posts, each with a halo sprite for a visible source.
   const headMat = new THREE.MeshBasicMaterial({ color: 0xffd9a0 });
   for (const [x, z] of [[-13, -8], [13, -8], [0, 20]]) {
-    const head = new THREE.Mesh(unitBox, headMat);
-    head.scale.set(0.55, 0.18, 0.55);
-    head.position.set(x, 3.45, z);
-    scene.add(head);
+    box(headMat, 0.55, 0.18, 0.55, x, 3.45, z);
     const halo = new THREE.Sprite(new THREE.SpriteMaterial({
       map: glowTex, color: 0xffc98a, transparent: true, opacity: 0.5,
       blending: THREE.AdditiveBlending, depthWrite: false,
@@ -953,15 +951,9 @@ export function buildWorld(scene) {
 
   // Amber strip lights along the pump-house roof rim — mid's landmark, visible down both lanes.
   const stripMat = new THREE.MeshBasicMaterial({ color: 0xffb46b });
-  for (const dz of [-2.32, 2.32]) {
-    const strip = new THREE.Mesh(unitBox, stripMat);
-    strip.scale.set(6.7, 0.07, 0.14);
-    strip.position.set(0, 3.32, -2 + dz);
-    scene.add(strip);
-  }
+  for (const dz of [-2.32, 2.32]) box(stripMat, 6.7, 0.07, 0.14, 0, 3.32, -2 + dz);
 
-  // ------------------------------------------------ set dressing: pipes, cables, catwalk,
-  // crane, barrels and ground paint. Pure scenery except the barrels, which also collide.
+  // ---- set dressing: pipes, cables, catwalk, crane, barrels, ground paint (barrels collide).
   const pipeMat = new THREE.MeshStandardMaterial({ color: 0x4c4438, roughness: 0.5, metalness: 0.7 });
   const pipeGeo = new THREE.CylinderGeometry(0.09, 0.09, 1, 10);
   const pipe = (x, y, z, len, axis) => {
@@ -1000,54 +992,20 @@ export function buildWorld(scene) {
   cable(0, 3.45, 20, 3.2, 3.5, 0.4, 0.9);
   // Railings and a ladder for the catwalk beam north of mid (the beam itself is in BOXES).
   for (const dz of [-0.62, 0.62]) {
-    for (let i = 0; i < 7; i++) {
-      const post = new THREE.Mesh(unitBox, mats.dark);
-      post.scale.set(0.05, 0.9, 0.05);
-      post.position.set(-3.3 + i * 1.1, 4.12, -24 + dz);
-      scene.add(post);
-    }
-    for (const ry of [4.12, 4.52]) {
-      const rail = new THREE.Mesh(unitBox, mats.dark);
-      rail.scale.set(7.2, 0.05, 0.05);
-      rail.position.set(0, ry, -24 + dz);
-      scene.add(rail);
-    }
+    for (let i = 0; i < 7; i++) box(mats.dark, 0.05, 0.9, 0.05, -3.3 + i * 1.1, 4.12, -24 + dz);
+    for (const ry of [4.12, 4.52]) box(mats.dark, 7.2, 0.05, 0.05, 0, ry, -24 + dz);
   }
-  for (let i = 0; i < 6; i++) {
-    const rung = new THREE.Mesh(unitBox, mats.dark);
-    rung.scale.set(0.05, 0.05, 0.56);
-    rung.position.set(3.72, 0.5 + i * 0.55, -24);
-    scene.add(rung);
-  }
-  for (const dz of [-0.28, 0.28]) {
-    const side = new THREE.Mesh(unitBox, mats.dark);
-    side.scale.set(0.05, 3.4, 0.05);
-    side.position.set(3.72, 1.7, -24 + dz);
-    scene.add(side);
-  }
+  for (let i = 0; i < 6; i++) box(mats.dark, 0.05, 0.05, 0.56, 3.72, 0.5 + i * 0.55, -24);
+  for (const dz of [-0.28, 0.28]) box(mats.dark, 0.05, 3.4, 0.05, 3.72, 1.7, -24 + dz);
   // A gantry crane silhouette beyond the north wall, and blinking lights on the stacks.
   const silMat = new THREE.MeshBasicMaterial({ color: 0x140d1e });
-  for (const gx of [-20, 20]) {
-    const leg = new THREE.Mesh(unitBox, silMat);
-    leg.scale.set(1.4, 15, 1.4);
-    leg.position.set(gx, 7.5, -46);
-    scene.add(leg);
-  }
-  const gBeam = new THREE.Mesh(unitBox, silMat);
-  gBeam.scale.set(44, 1.3, 1.6);
-  gBeam.position.set(0, 15.2, -46);
-  scene.add(gBeam);
-  const trolley = new THREE.Mesh(unitBox, silMat);
-  trolley.scale.set(2.2, 1.4, 1.8);
-  trolley.position.set(-6, 14.2, -46);
-  scene.add(trolley);
+  for (const gx of [-20, 20]) box(silMat, 1.4, 15, 1.4, gx, 7.5, -46);
+  box(silMat, 44, 1.3, 1.6, 0, 15.2, -46);
+  box(silMat, 2.2, 1.4, 1.8, -6, 14.2, -46);
   const hookLine = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 4.6, 6), silMat);
   hookLine.position.set(-6, 11.4, -46);
   scene.add(hookLine);
-  const hookBlock = new THREE.Mesh(unitBox, silMat);
-  hookBlock.scale.set(0.9, 0.9, 0.9);
-  hookBlock.position.set(-6, 8.8, -46);
-  scene.add(hookBlock);
+  box(silMat, 0.9, 0.9, 0.9, -6, 8.8, -46);
   const warnMat = new THREE.MeshBasicMaterial({ color: 0xff2a22 });
   for (const [x, z, ph] of [[-46, -44, 0], [44, -48, 0.5]]) {
     const w = new THREE.Mesh(new THREE.SphereGeometry(0.42, 8, 8), warnMat);
@@ -1080,8 +1038,7 @@ export function buildWorld(scene) {
   barrelAt(16.7, -12.0, 2, false);
   barrelAt(-13.8, 17.8, 2, false);
   barrelAt(27.5, 15.5, 0, false);
-  // Ground paint: scorch marks, a worn walkway stripe running spawn-to-mid, hazard chevrons
-  // at the two door gaps, and the site letters painted large on the walls.
+  // Ground paint: scorch marks, the walkway stripe, hazard chevrons, big site letters.
   const scorchMat = new THREE.MeshBasicMaterial({ map: tex.scorch, transparent: true, depthWrite: false });
   for (const [x, z, s, r] of [[-22, -16.6, 5.5, 0.4], [-19.8, -13.2, 3.4, 2.2], [24, -18.6, 4.2, 1.1], [1.5, -7, 3, 2.8]]) {
     const d = new THREE.Mesh(new THREE.PlaneGeometry(s, s), scorchMat);
@@ -1111,21 +1068,16 @@ export function buildWorld(scene) {
     ch.renderOrder = 1;
     scene.add(ch);
   }
-  const wallA = new THREE.Mesh(
-    new THREE.PlaneGeometry(2.6, 2.6),
-    new THREE.MeshBasicMaterial({ map: tex.letter('A', '#ff7a33'), transparent: true, opacity: 0.9 }),
-  );
-  wallA.position.set(-22, 2.45, -18.44);
-  scene.add(wallA);
-  const wallB = new THREE.Mesh(
-    new THREE.PlaneGeometry(2.1, 2.1),
-    new THREE.MeshBasicMaterial({ map: tex.letter('B', '#39c2c9'), transparent: true, opacity: 0.9 }),
-  );
-  wallB.position.set(18, 1.45, -22.78);
-  scene.add(wallB);
+  const wallLetter = (id, color, size, x, y, z) => {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(size, size),
+      new THREE.MeshBasicMaterial({ map: tex.letter(id, color), transparent: true, opacity: 0.9 }));
+    m.position.set(x, y, z);
+    scene.add(m);
+  };
+  wallLetter('A', '#ff7a33', 2.6, -22, 2.45, -18.44);
+  wallLetter('B', '#39c2c9', 2.1, 18, 1.45, -22.78);
 
-  // Drifting embers: sparks off the furnace column plus a sparse yard-wide drift. One Points
-  // cloud, positions recycled in worldTick — no per-frame allocation.
+  // Drifting embers: one Points cloud, positions recycled in worldTick — no allocation.
   {
     const N = 240;
     const pos = new Float32Array(N * 3);

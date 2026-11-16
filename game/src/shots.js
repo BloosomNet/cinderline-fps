@@ -44,13 +44,8 @@ export function setupShot(name) {
   scene = name;
   S.events.length = 0; // drop the real round-1 announcements; the scene tells its own story
   const p = S.player;
-  const vex = byName('Vex');
-  const onyx = byName('Onyx');
-  const rook = byName('Rook');
-  const hale = byName('Hale');
-  const moss = byName('Moss');
-  const ivers = byName('Ivers');
-  const tarn = byName('Tarn');
+  const [vex, onyx, rook, hale, moss, ivers, tarn] =
+    ['Vex', 'Onyx', 'Rook', 'Hale', 'Moss', 'Ivers', 'Tarn'].map(byName);
   S.round = 6;
   if (name === 'action') {
     // A mid-lane firefight, frozen on the frame the player's shot lands.

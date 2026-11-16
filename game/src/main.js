@@ -1,12 +1,11 @@
 // main.js — boot and the frame loop. The simulation advances in fixed 1/60 steps from an
 // accumulator (rendering never changes the game's outcome), while the camera, bot bodies,
-// effects and HUD update every animation frame. Modes: normal play (pointer lock on desktop,
-// touch controls on mobile), ?demo=1 (the bot brain drives the player — a full round plays
-// itself), and ?shot=<name> (a frozen screenshot scene from shots.js).
+// effects and HUD update every animation frame. Modes: normal play (pointer lock / touch),
+// ?demo=1 (the bot brain drives the player), and ?shot=<name> (a frozen screenshot scene).
 
 import * as THREE from 'three';
 import { S, ROUND } from './state.js';
-import { buildWorld, worldTick } from './world.js';
+import { buildWorld, worldTick, glowTexture } from './world.js';
 import { createMatch, updateRounds } from './rounds.js';
 import * as input from './input.js';
 import { initView, updatePlayer, updateCamera } from './player.js';
@@ -42,21 +41,9 @@ bots.buildBotBodies(scene);
 initView(scene, camera);
 initHUD();
 
-// ---------------------------------------------------------------- effects pools
+// ---- effects pools
 
-function glowTexture() {
-  const c = document.createElement('canvas');
-  c.width = c.height = 64;
-  const ctx = c.getContext('2d');
-  const g = ctx.createRadialGradient(32, 32, 2, 32, 32, 32);
-  g.addColorStop(0, 'rgba(255,255,255,1)');
-  g.addColorStop(0.35, 'rgba(255,255,255,0.55)');
-  g.addColorStop(1, 'rgba(255,255,255,0)');
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, 64, 64);
-  return new THREE.CanvasTexture(c);
-}
-const glowTex = glowTexture();
+const glowTex = glowTexture(); // the shared soft-glow texture from world.js
 
 const TRACER_MAX = 48;
 const tracerGeo = new THREE.BufferGeometry();
@@ -87,9 +74,9 @@ const boomPool = makeSpritePool(4, 0xff9a4d, 3);
 const boomLight = new THREE.PointLight(0xff8a3c, 0, 26, 1.5);
 scene.add(boomLight);
 
-// Explosion dressing, spawned render-side the first frame a new explosion (or impact) shows
-// up in S.fx: lingering smoke, debris sparks, a ground shockwave ring, and chips off impacts.
-// The sim owns only the flash sprite and light above; none of this feeds back into it.
+// Explosion dressing, spawned render-side when a new explosion or impact appears in S.fx:
+// lingering smoke, debris sparks, a ground shockwave ring, chips off impacts. None of it
+// feeds back into the sim.
 const smokePool = [];
 for (let i = 0; i < 8; i++) {
   const m = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color: 0x554a52, transparent: true, opacity: 0, depthWrite: false }));
@@ -97,22 +84,20 @@ for (let i = 0; i < 8; i++) {
   scene.add(m);
   smokePool.push({ m, life: 0, max: 1 });
 }
-const debrisPool = [];
-for (let i = 0; i < 22; i++) {
-  const m = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color: 0xffb060, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }));
-  m.scale.setScalar(0.13);
-  m.visible = false;
-  scene.add(m);
-  debrisPool.push({ m, life: 0, vx: 0, vy: 0, vz: 0 });
+// A pool of additive glow sprites with velocity — debris sparks and impact chips alike.
+function makeParticlePool(n, color, size) {
+  const pool = [];
+  for (let i = 0; i < n; i++) {
+    const m = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }));
+    m.scale.setScalar(size);
+    m.visible = false;
+    scene.add(m);
+    pool.push({ m, life: 0, vx: 0, vy: 0, vz: 0 });
+  }
+  return pool;
 }
-const chipPool = [];
-for (let i = 0; i < 18; i++) {
-  const m = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color: 0xd8c9a8, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }));
-  m.scale.setScalar(0.09);
-  m.visible = false;
-  scene.add(m);
-  chipPool.push({ m, life: 0, vx: 0, vy: 0, vz: 0 });
-}
+const debrisPool = makeParticlePool(22, 0xffb060, 0.13);
+const chipPool = makeParticlePool(18, 0xd8c9a8, 0.09);
 const ringPool = [];
 {
   const rGeo = new THREE.RingGeometry(0.42, 0.5, 36);
@@ -161,6 +146,7 @@ function spawnBoomFx(ex) {
     break;
   }
 }
+
 
 const grenadePool = [];
 {
@@ -241,7 +227,9 @@ function updateFx(rdt) {
     s.material.opacity = life;
     s.scale.setScalar((ex.big ? 9 : 5.5) * (1.25 - life * 0.25));
     boomLight.position.set(ex.x, ex.y + 0.6, ex.z);
-    boomLight.intensity = 120 * life;
+    // The flash falls off faster than the sprite fades, and its reach shrinks with it.
+    boomLight.intensity = 150 * life * life;
+    boomLight.distance = (ex.big ? 34 : 26) * (0.55 + 0.45 * life);
   }
   for (; bi < boomPool.length; bi++) boomPool[bi].visible = false;
   for (let i = 0; i < grenadePool.length; i++) {
@@ -249,8 +237,7 @@ function updateFx(rdt) {
     grenadePool[i].visible = !!g;
     if (g) grenadePool[i].position.set(g.x, g.y, g.z);
   }
-  // Animate the explosion dressing: smoke rises and thins, debris and chips arc and bounce
-  // once, and the shockwave ring expands flat across the ground.
+  // Animate the dressing: smoke rises and thins, debris arcs and bounces, the ring expands.
   for (const s of smokePool) {
     if (s.life <= 0) continue;
     s.life -= rdt;
@@ -293,8 +280,7 @@ function updateFx(rdt) {
     bombMesh.rotation.y = 0.6;
     bombMesh.visible = true;
   }
-  // The planted charge blinks red, faster and faster as its clock runs down, and throws a
-  // pulse of real light on each blink; carried or dropped it just ticks amber.
+  // The planted charge blinks red, faster as its clock runs down; otherwise it ticks amber.
   const planted = b.state === 'planted';
   const frac = planted ? Math.max(0, S.phaseT / ROUND.bombTime) : 1;
   const on = Math.sin(S.time * (planted ? 3 + (1 - frac) * 11 : 2) * Math.PI) > 0;
@@ -304,7 +290,7 @@ function updateFx(rdt) {
   bombLight.intensity = planted && on ? 13 : 0;
 }
 
-// ---------------------------------------------------------------- start / pause flow
+// ---- start / pause flow
 
 const overlay = document.getElementById('overlay');
 let started = false;
@@ -351,7 +337,7 @@ window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
-// ---------------------------------------------------------------- the loop
+// ---- the loop
 
 function decayFx(dt) {
   for (const list of [S.fx.tracers, S.fx.impacts, S.fx.explosions]) {
