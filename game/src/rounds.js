@@ -1,7 +1,6 @@
 // rounds.js — the match itself: phases (freeze → live → planted → round end → match end),
 // the bomb (carry, drop, plant, defuse, detonate), the economy, and the buy phase. This module
-// owns every phase transition; bots and weapons push events into S.events and this module
-// reacts — kill events drop the bomb, a finished plant flips the whole map's objectives.
+// owns every phase transition; a finished plant flips the whole map's objectives.
 
 import { S, ROUND, ECONOMY, makeCombatant, aliveCount } from './state.js';
 import { SPAWNS, SITES, siteAt } from './world.js';
@@ -80,19 +79,34 @@ function startRound() {
   S.bomb.x = S.player.x;
   S.bomb.z = S.player.z;
   planRound();
-  for (const c of S.combatants) if (c.isBot) botBuy(c);
+  // Team economy: when the typical bot on a team cannot afford a rifle, the whole team
+  // saves together — sidearms this round, rifles the next.
+  const saveRound = {};
+  for (const team of ['ember', 'ward']) {
+    const money = S.combatants.filter((c) => c.isBot && c.team === team)
+      .map((c) => c.money).sort((a, b) => a - b);
+    saveRound[team] = S.round > 1 && money[1] < WEAPONS.rifle.cost;
+  }
+  for (const c of S.combatants) if (c.isBot) botBuy(c, saveRound[c.team]);
   S.events.push({ type: 'roundStart', round: S.round, target: S.roundTarget });
 }
 
-function botBuy(c) {
+function botBuy(c, saveRound) {
   const rng = S.rng;
-  if (!c.armor && c.money >= 1000) { c.money -= ARMOR.cost; c.armor = true; }
+  if (saveRound) {
+    // Coordinated save: no weapon or grenade buys; armor only for a bot rich enough that
+    // it still banks most of a rifle for next round.
+    if (!c.armor && c.money >= 2200) { c.money -= ARMOR.cost; c.armor = true; }
+    return;
+  }
+  // Weapon first (armor bought first could eat the rifle money), then armor, then a frag.
   if (c.weapon === 'sidearm') {
-    if (c.money >= WEAPONS.rifle.cost && rng.next() < 0.7) buyWeapon(c, 'rifle');
+    if (c.money >= WEAPONS.rifle.cost && rng.next() < 0.75) buyWeapon(c, 'rifle');
     else if (c.money >= WEAPONS.smg.cost) buyWeapon(c, 'smg');
   } else if (c.weapon === 'smg' && c.money >= 3400) {
     buyWeapon(c, 'rifle');
   }
+  if (!c.armor && c.money >= 1000) { c.money -= ARMOR.cost; c.armor = true; }
   if (c.grenades === 0 && c.money >= 900 && rng.next() < 0.5) {
     c.money -= GRENADE.cost;
     c.grenades = 1;
@@ -105,11 +119,11 @@ function playerBuy() {
   if (!p.alive || S.phase !== 'freeze') return;
   if (input.pressed('Digit1')) { if (buyWeapon(p, 'rifle')) audio.playBeep(false); }
   if (input.pressed('Digit2')) { if (buyWeapon(p, 'smg')) audio.playBeep(false); }
-  if (input.pressed('Digit3')) {
-    if (!p.armor && p.money >= ARMOR.cost) { p.money -= ARMOR.cost; p.armor = true; audio.playBeep(false); }
+  if (input.pressed('Digit3') && !p.armor && p.money >= ARMOR.cost) {
+    p.money -= ARMOR.cost; p.armor = true; audio.playBeep(false);
   }
-  if (input.pressed('Digit4')) {
-    if (p.grenades < 2 && p.money >= GRENADE.cost) { p.money -= GRENADE.cost; p.grenades += 1; audio.playBeep(false); }
+  if (input.pressed('Digit4') && p.grenades < 2 && p.money >= GRENADE.cost) {
+    p.money -= GRENADE.cost; p.grenades += 1; audio.playBeep(false);
   }
   if (input.pressed('Digit5')) {
     const w = WEAPONS[p.weapon];

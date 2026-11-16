@@ -1,16 +1,9 @@
 // state.js — the game's single state object and the combatant factory.
 // Everything mutable lives in S (or in a module's own render-only scratch); the simulation steps
-// read and write S, and the renderer only reads it. Keeping state in one place is what lets the
-// round machine, the bots and the HUD agree without passing references around. The simulation
-// reads only S.time and S.rng — never the wall clock or Math.random — so a seeded match replays
-// identically.
+// read and write S, and the renderer only reads it. The simulation reads only S.time and S.rng —
+// never the wall clock or Math.random — so a seeded match replays identically.
 
 import { Rng } from './rng.js';
-
-export const TEAMS = {
-  ember: { name: 'EMBER', role: 'attack', color: 0xff7a33 },
-  ward: { name: 'WARD', role: 'defence', color: 0x39c2c9 },
-};
 
 export const ROUND = {
   freeze: 6, // buy + set-up time at round start
@@ -34,8 +27,8 @@ export const ECONOMY = {
 };
 
 // One combatant is the shared shape for the player and every bot: position/velocity as plain
-// numbers (no per-frame allocation), a current weapon with its own ammo counters, and per-bot
-// brain state attached by bots.js as `ai`. Timers count down in seconds of simulation time.
+// numbers (no per-frame allocation), a weapon with its own ammo counters, and per-bot brain
+// state attached by bots.js as `ai`. Timers count down in seconds of simulation time.
 export function makeCombatant({ name, team, isPlayer = false, isBot = false }) {
   return {
     name,

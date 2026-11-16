@@ -1,15 +1,13 @@
 // bots.js — the seven AI combatants and, in demo mode, the player's stand-in brain.
 // Perception is honest: a bot only knows what it can see (110° cone, line of sight, 55 m) or
-// hear (gunfire, footsteps, the plant beep), and it remembers the last place it saw you.
-// Tactics come from roles assigned each round: attackers push a chosen site along the waypoint
-// graph while a lurker works the other lane; defenders hold set positions and rotate when the
-// charge is planted. In combat a bot turns, settles its aim (error decays while it stands
-// still), and fires bursts through the same weapons code the player uses.
+// hear (gunfire, footsteps, the plant beep), and remembers the last place it saw you. Tactics
+// come from round roles, cover play and team calls (planRound / updateBot below); in combat a
+// bot settles its aim while still and fires bursts through the same weapons code the player uses.
 
 import * as THREE from 'three';
-import { S } from './state.js';
+import { S, aliveCount } from './state.js';
 import { clamp, lerp, yawOf } from './rng.js';
-import { findPath, nearestNode, hasLOS, segmentBlocked, HOLDS, SITES } from './world.js';
+import { findPath, nearestNode, hasLOS, segmentBlocked, COLLIDERS, HOLDS, SITES } from './world.js';
 import { integrate, eyeHeight } from './player.js';
 import * as weapons from './weapons.js';
 
@@ -35,10 +33,13 @@ export function makeAI(c, skill) {
     scanT: 0,
     wantPlant: false,
     investigate: false,
+    faceX: 0, faceZ: 0, hasFace: false, // the entry lane a settled bot pre-aims
+    coverX: 0, coverZ: 0, hasCover: false, // a fighting position in a blocker's shadow
+    homeX: 0, homeZ: 0, // the last spot with a clear shot — the peek point from cover
   };
 }
 
-// ---------------------------------------------------------------- round planning
+// ---- round planning
 
 // Called at freeze with the round's chosen attack site. Roles are plain assignments of goals;
 // the per-step brain below turns goals into movement.
@@ -49,33 +50,36 @@ export function planRound() {
   embers.forEach((c, i) => {
     const ai = c.ai;
     ai.investigate = false;
+    ai.hasCover = false;
+    ai.hasFace = false;
     if (i === 0) { ai.role = 'entry'; ai.goal = { x: target.plant.x, z: target.plant.z }; }
     else if (i === 1) { ai.role = 'support'; ai.goal = { x: target.cx + (target.cx < 0 ? 6 : -6), z: target.cz + 2 }; }
     else { ai.role = 'lurker'; ai.goal = { x: other.cx, z: other.cz + 8 }; }
     ai.path = null;
   });
   const wards = S.combatants.filter((c) => c.team === 'ward' && c.isBot);
-  const holds = [...HOLDS_FOR_ROUND()];
+  const holds = [HOLDS.A[0], HOLDS.A[1], HOLDS.B[0], HOLDS.mid[0], HOLDS.B[1]];
   wards.forEach((c, i) => {
     const ai = c.ai;
     ai.investigate = false;
+    ai.hasCover = false;
     const h = holds[i % holds.length];
     ai.role = 'hold';
     ai.goal = { x: h.x, z: h.z };
+    ai.faceX = h.wx; ai.faceZ = h.wz; ai.hasFace = true; // pre-aim the entry this hold covers
     ai.path = null;
   });
 }
 
-function HOLDS_FOR_ROUND() {
-  return [HOLDS.A[0], HOLDS.A[1], HOLDS.B[0], HOLDS.mid[0], HOLDS.B[1]];
-}
+// When the charge goes down, defenders rotate to the planted site and attackers fall back
+// to distinct post-plant slots around it (never clumped), watching the door for the retake.
+const POST_PLANT = [[-4.5, 2], [4.5, -2.5], [-6, 0.5], [3.5, -5.5]];
 
-// When the charge goes down, every living defender rotates to the planted site and every
-// attacker falls back to cover it.
 export function onPlanted() {
   const site = SITES[S.bomb.site];
+  let slot = 0;
   for (const c of S.combatants) {
-    if (!c.isBot || !c.alive) continue;
+    if (!c.ai || !c.alive) continue;
     const ai = c.ai;
     ai.investigate = false;
     if (c.team === 'ward') {
@@ -83,13 +87,15 @@ export function onPlanted() {
       ai.goal = { x: site.plant.x, z: site.plant.z };
     } else {
       ai.role = 'holdSite';
-      ai.goal = { x: site.cx + (c.x < site.cx ? -3.5 : 3.5), z: site.cz + (c.z < site.cz ? -3 : 3) };
+      const [ox, oz] = POST_PLANT[slot++ % POST_PLANT.length];
+      ai.goal = { x: site.plant.x + ox, z: site.plant.z + oz };
+      ai.faceX = site.cx + (site.cx < 0 ? 9 : -9); ai.faceZ = site.cz + 2; ai.hasFace = true;
     }
     ai.path = null;
   }
 }
 
-// ---------------------------------------------------------------- perception
+// ---- perception
 
 function perceive(c, dt) {
   const ai = c.ai;
@@ -125,6 +131,8 @@ function perceive(c, dt) {
   if (best) {
     if (ai.seenEnemy !== best || S.time - ai.seenT > 1.2) {
       ai.reactT = lerp(0.5, 0.22, ai.skill); // fresh contact: human-like reaction delay
+      if (ai.seenEnemy !== best) ai.hasCover = false; // cover was picked against another threat
+      callSpot(c, best);
     }
     ai.seenEnemy = best;
     ai.seenT = S.time;
@@ -134,7 +142,25 @@ function perceive(c, dt) {
   }
 }
 
-// ---------------------------------------------------------------- steering
+// A defender's fresh sighting is radioed to its team: the nearest living teammate notes
+// the position, and a holding mate starts rotating to help at once.
+function callSpot(c, e) {
+  if (c.team !== 'ward') return;
+  let mate = null;
+  let bestD = Infinity;
+  for (const t of S.combatants) {
+    if (t === c || !t.ai || !t.alive || t.team !== 'ward') continue;
+    const d = Math.hypot(t.x - e.x, t.z - e.z);
+    if (d < bestD) { bestD = d; mate = t; }
+  }
+  if (!mate) return;
+  mate.ai.heardX = e.x;
+  mate.ai.heardZ = e.z;
+  mate.ai.heardT = S.time;
+  if (mate.ai.role === 'hold') mate.ai.investigate = true;
+}
+
+// ---- steering
 
 function turnToward(c, targetYaw, rate, dt) {
   const diff = ((targetYaw - c.yaw + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
@@ -181,7 +207,35 @@ function steer(c, tx, tz, dt, speedScale = 1) {
   integrate(c, dt, dirX * speedScale, dirZ * speedScale, false);
 }
 
-// ---------------------------------------------------------------- the brain
+// Find a fighting position in a blocker's shadow (relative to the threat at tx, tz):
+// a point behind a solid collider whose line to the threat is blocked. Sets ai.coverX/Z.
+function findCover(c, tx, tz) {
+  const ai = c.ai;
+  ai.hasCover = false;
+  let bestD = 9; // only nearby cover is worth running to
+  for (const col of COLLIDERS) {
+    if (col.top < 1) continue; // low crates don't hide a standing bot
+    // The collider centre relative to the threat picks the shadow face to stand behind.
+    const dx = (col.minX + col.maxX) / 2 - tx, dz = (col.minZ + col.maxZ) / 2 - tz;
+    let px, pz;
+    if (Math.abs(dx) > Math.abs(dz)) {
+      px = dx > 0 ? col.maxX + 0.55 : col.minX - 0.55;
+      pz = clamp(c.z, col.minZ + 0.2, col.maxZ - 0.2);
+    } else {
+      pz = dz > 0 ? col.maxZ + 0.55 : col.minZ - 0.55;
+      px = clamp(c.x, col.minX + 0.2, col.maxX - 0.2);
+    }
+    const d = Math.hypot(px - c.x, pz - c.z);
+    if (d < bestD && segmentBlocked(tx, 1.4, tz, px, 1.1, pz)) {
+      bestD = d;
+      ai.coverX = px;
+      ai.coverZ = pz;
+      ai.hasCover = true;
+    }
+  }
+}
+
+// ---- the brain
 
 export function updateBot(c, dt) {
   const ai = c.ai;
@@ -201,45 +255,78 @@ export function updateBot(c, dt) {
     return;
   }
 
-  const seesNow = ai.seenEnemy && ai.seenEnemy.alive && S.time - ai.seenT < 0.45 &&
-    hasLOS(c.x, c.y + eyeHeight(c), c.z, ai.seenEnemy.x, ai.seenEnemy.y + 1.15, ai.seenEnemy.z);
+  const e = ai.seenEnemy;
   const phaseLive = S.phase === 'live' || S.phase === 'planted';
+  const seesNow = phaseLive && e && e.alive && S.time - ai.seenT < 0.45 &&
+    hasLOS(c.x, c.y + eyeHeight(c), c.z, e.x, e.y + 1.15, e.z);
+  // A fight lasts a few seconds past the last sighting: the bot plays its memory of the
+  // enemy — cover, a frag at the spot, re-acquiring — instead of dropping back to routine.
+  const inFight = phaseLive && e && e.alive && S.time - ai.seenT < 2.5;
 
-  if (seesNow && phaseLive) {
-    const e = ai.seenEnemy;
-    const dx = e.x - c.x, dz = e.z - c.z;
+  if (inFight) {
+    const tx = seesNow ? e.x : ai.seenX;
+    const tz = seesNow ? e.z : ai.seenZ;
+    const dx = tx - c.x, dz = tz - c.z;
     const dist = Math.hypot(dx, dz) || 1;
     turnToward(c, yawOf(dx, dz), lerp(4.5, 7.5, ai.skill), dt);
-    c.pitch = clamp(Math.atan2((e.y + 1.15) - (c.y + eyeHeight(c)), dist), -0.6, 0.6);
-    // Aim settles while still; movement and target movement spoil it.
-    const stillness = c.speed2d < 0.4 ? 1 : 0;
-    ai.stillT = stillness ? ai.stillT + dt : 0;
-    c.aimErr = Math.max(0.004, (1 - ai.skill) * 0.028 + dist * 0.00035 + e.speed2d * 0.005 - ai.stillT * 0.006);
-    // Burst discipline: fire a burst, pause, fire again.
-    if (ai.reactT > 0) ai.reactT -= dt;
-    else {
-      ai.burstT -= dt;
-      if (ai.burstT <= 0) {
-        ai.firing = !ai.firing;
-        ai.burstT = ai.firing ? lerp(0.22, 0.45, S.rng.next()) : lerp(0.3, 0.7, S.rng.next()) * (dist > 25 ? 0.7 : 1);
+    if (seesNow) {
+      c.pitch = clamp(Math.atan2((e.y + 1.15) - (c.y + eyeHeight(c)), dist), -0.6, 0.6);
+      ai.homeX = c.x; ai.homeZ = c.z; // the last spot with a clear shot — the peek point
+      // Aim settles while still; movement and target movement spoil it.
+      const stillness = c.speed2d < 0.4 ? 1 : 0;
+      ai.stillT = stillness ? ai.stillT + dt : 0;
+      c.aimErr = Math.max(0.004, (1 - ai.skill) * 0.028 + dist * 0.00035 + e.speed2d * 0.005 - ai.stillT * 0.006);
+      // Burst discipline: fire a burst, pause, fire again.
+      if (ai.reactT > 0) ai.reactT -= dt;
+      else {
+        ai.burstT -= dt;
+        if (ai.burstT <= 0) {
+          ai.firing = !ai.firing;
+          ai.burstT = ai.firing ? lerp(0.22, 0.45, S.rng.next()) : lerp(0.3, 0.7, S.rng.next()) * (dist > 25 ? 0.7 : 1);
+        }
+        wantFire = ai.firing;
       }
-      wantFire = ai.firing;
+      // Occasional frag at a mid-range target the bot can see.
+      if (c.grenades > 0 && dist > 8 && dist < 23 && S.rng.next() < dt * 0.25) {
+        weapons.throwGrenade(c);
+      }
+    } else {
+      ai.firing = false;
+      // No eyes on the target right now: a frag at the last-seen spot, while it's fresh.
+      if (c.grenades > 0 && S.time - ai.seenT < 1.2 && dist > 7 && dist < 22 &&
+          turnToward(c, yawOf(dx, dz), 7, dt) && S.rng.next() < dt * 1.5) {
+        c.pitch = 0.12;
+        weapons.throwGrenade(c);
+      }
     }
-    // Combat movement: close the distance, back off point-blank, otherwise strafe.
-    ai.strafeT -= dt;
-    if (ai.strafeT <= 0) { ai.strafeDir = S.rng.next() < 0.5 ? -1 : 1; ai.strafeT = lerp(0.7, 1.4, S.rng.next()); }
+    // Movement. Reloading or badly hurt means fighting from cover: duck behind the nearest
+    // blocker, and on each burst step back out to the peek point, in again on the pause.
+    // tp is the point to move toward (null = open strafe below); stop is close enough.
+    const needCover = c.reloadT > 0 || c.hp <= 40;
+    if (needCover && !ai.hasCover) findCover(c, tx, tz);
     let mx = 0, mz = 0;
-    if (dist > 17) { mx = dx / dist; mz = dz / dist; }
-    else if (dist < 4.5) { mx = -dx / dist; mz = -dz / dist; }
-    else { mx = (-dz / dist) * ai.strafeDir; mz = (dx / dist) * ai.strafeDir; }
-    c.crouching = dist > 13 && ai.stillT > 0.8;
-    integrate(c, dt, mx, mz, false);
-    // Occasional frag at a mid-range target the bot can see.
-    if (c.grenades > 0 && dist > 8 && dist < 23 && S.rng.next() < dt * 0.25) {
-      weapons.throwGrenade(c);
+    let tp = null, stop = 0.5, spd = 1;
+    if (ai.hasCover && needCover) { tp = [ai.coverX, ai.coverZ]; stop = 0.7; }
+    else if (ai.hasCover && seesNow) tp = ai.firing ? [ai.homeX, ai.homeZ] : [ai.coverX, ai.coverZ];
+    else if (!seesNow) { tp = [tx, tz]; stop = 6; spd = 0.9; }
+    if (tp) {
+      const px = tp[0] - c.x, pz = tp[1] - c.z;
+      const pd = Math.hypot(px, pz);
+      c.crouching = ai.hasCover && needCover && pd < 0.7; // settled in cover: stay low
+      if (pd > stop) { mx = px / pd * spd; mz = pz / pd * spd; }
+    } else {
+      // Open combat movement: close the distance, back off point-blank, otherwise strafe.
+      ai.strafeT -= dt;
+      if (ai.strafeT <= 0) { ai.strafeDir = S.rng.next() < 0.5 ? -1 : 1; ai.strafeT = lerp(0.7, 1.4, S.rng.next()); }
+      if (dist > 17) { mx = dx / dist; mz = dz / dist; }
+      else if (dist < 4.5) { mx = -dx / dist; mz = -dz / dist; }
+      else { mx = (-dz / dist) * ai.strafeDir; mz = (dx / dist) * ai.strafeDir; }
+      c.crouching = dist > 13 && ai.stillT > 0.8;
     }
+    integrate(c, dt, mx, mz, false);
   } else {
     ai.firing = false;
+    ai.hasCover = false;
     c.aimErr = 0.03;
     c.crouching = false;
     if (c.mag < WEAPONS_LOW(c) && c.reloadT <= 0) weapons.startReload(c);
@@ -267,8 +354,8 @@ function objectiveMove(c, dt) {
     }
     ai.goal = { x: site.plant.x, z: site.plant.z };
   }
-  // A defender near a dropped charge defuses it; an attacker near it picks it up (rounds.js
-  // validates the channel itself — here we just walk to the spot and ask).
+  // A defender near a planted charge defuses it; an attacker near a dropped one picks it
+  // up (rounds.js validates the channel itself — here we just walk to the spot and ask).
   if (S.bomb.state === 'planted' && c.team === 'ward') {
     const d = Math.hypot(S.bomb.x - c.x, S.bomb.z - c.z);
     if (d < 1.1) {
@@ -276,27 +363,69 @@ function objectiveMove(c, dt) {
       integrate(c, dt, 0, 0, false);
       return;
     }
-    ai.goal = { x: S.bomb.x, z: S.bomb.z };
+    // Retake roles: the nearest defender goes for the defuse; the others hold a few metres
+    // off the charge, angled toward the last-seen attacker, covering the defuser.
+    const nearest = !S.combatants.some((t) => t !== c && t.team === 'ward' && t.alive &&
+      Math.hypot(S.bomb.x - t.x, S.bomb.z - t.z) < d);
+    if (nearest) {
+      ai.goal = { x: S.bomb.x, z: S.bomb.z };
+    } else {
+      const fresh = S.time - ai.seenT < 30;
+      const ex = fresh ? ai.seenX : S.bomb.x + 5;
+      const ez = fresh ? ai.seenZ : S.bomb.z;
+      const od = Math.hypot(S.bomb.x - ex, S.bomb.z - ez) || 1;
+      ai.goal = { x: S.bomb.x + (S.bomb.x - ex) / od * 3.2, z: S.bomb.z + (S.bomb.z - ez) / od * 3.2 };
+      ai.faceX = ex; ai.faceZ = ez; ai.hasFace = true;
+    }
     ai.path = null;
   }
   if (S.bomb.state === 'dropped' && c.team === 'ember') {
     const d = Math.hypot(S.bomb.x - c.x, S.bomb.z - c.z);
     if (d < 14) { ai.goal = { x: S.bomb.x, z: S.bomb.z }; ai.path = null; }
   }
-  // Investigate a recent sound if the role allows it.
   let gx = ai.goal ? ai.goal.x : c.x;
   let gz = ai.goal ? ai.goal.z : c.z;
+  // Investigate a recent sound if the role allows it.
   if (ai.investigate && S.time - ai.heardT < 3 && S.phase === 'live') {
     gx = ai.heardX; gz = ai.heardZ;
     if (Math.hypot(gx - c.x, gz - c.z) < 1.6) ai.investigate = false;
   }
+  // Alone against three or more, a bot stops pushing: it falls back to its site's door and
+  // ambushes. A defender picks the nearer site; a nearby dropped charge still wins.
+  if (S.phase === 'live' && S.bomb.carrier !== c && aliveCount(c.team) === 1 &&
+      aliveCount(c.team === 'ember' ? 'ward' : 'ember') >= 3 &&
+      !(S.bomb.state === 'dropped' && Math.hypot(S.bomb.x - c.x, S.bomb.z - c.z) < 14)) {
+    let site = SITES[S.roundTarget];
+    if (c.team === 'ward') {
+      site = Math.hypot(c.x - SITES.A.cx, c.z - SITES.A.cz) < Math.hypot(c.x - SITES.B.cx, c.z - SITES.B.cz)
+        ? SITES.A : SITES.B;
+    }
+    gx = site.cx + (site.cx < 0 ? 9 : -9);
+    gz = site.cz + 2;
+    ai.faceX = site.plant.x; ai.faceZ = site.plant.z; ai.hasFace = true;
+  }
+  // The support bot never outruns its entry: closer to the plant than the entry is, it
+  // holds position and covers until the entry catches up.
+  if (ai.role === 'support' && S.phase === 'live' && S.bomb.state === 'carried') {
+    const site = SITES[S.roundTarget];
+    let entry = null;
+    for (const t of S.combatants) if (t.ai && t.team === c.team && t.ai.role === 'entry') entry = t;
+    if (entry && entry.alive &&
+        Math.hypot(c.x - site.plant.x, c.z - site.plant.z) < Math.hypot(entry.x - site.plant.x, entry.z - site.plant.z) - 1) {
+      integrate(c, dt, 0, 0, false);
+      return;
+    }
+  }
   const arrived = moveAlong(c, gx, gz, dt, ai.role === 'lurker' ? 0.8 : 1);
   if (arrived) {
-    // Settle: hold the position, sweep-scan for threats.
+    // Settle: hold the position and watch the assigned entry lane, sweeping a narrow arc
+    // around it; without an assignment, sweep-scan the surroundings as before.
     ai.scanT -= dt;
     if (ai.scanT <= 0) {
       ai.scanT = lerp(1.2, 2.6, S.rng.next());
-      ai.scanYaw = c.yaw + lerp(-1.1, 1.1, S.rng.next());
+      ai.scanYaw = ai.hasFace
+        ? yawOf(ai.faceX - c.x, ai.faceZ - c.z) + lerp(-0.45, 0.45, S.rng.next())
+        : c.yaw + lerp(-1.1, 1.1, S.rng.next());
     }
     turnToward(c, ai.scanYaw, 2.2, dt);
     c.crouching = ai.role === 'hold' || ai.role === 'holdSite';
@@ -308,9 +437,9 @@ export function updateDemoPlayer(dt) {
   const p = S.player;
   if (!p.ai) p.ai = makeAI(p, 0.78);
   if (S.phase === 'freeze' && p.alive) {
-    if (!p.armor && p.money >= 650) { p.money -= 650; p.armor = true; }
     if (p.weapon === 'sidearm' && p.money >= 2700) buyWeapon(p, 'rifle');
     else if (p.weapon === 'sidearm' && p.money >= 1400) buyWeapon(p, 'smg');
+    if (!p.armor && p.money >= 650) { p.money -= 650; p.armor = true; }
     if (p.grenades < 1 && p.money >= 300) { p.money -= 300; p.grenades = 1; }
   }
   updateBot(p, dt);
@@ -328,7 +457,7 @@ export function buyWeapon(c, id) {
   return true;
 }
 
-// ---------------------------------------------------------------- bot bodies (rendering)
+// ---- bot bodies (rendering)
 
 const bodies = new Map();
 
@@ -342,51 +471,39 @@ export function buildBotBodies(scene) {
       roughness: 0.7, emissive: c.team === 'ember' ? 0x2a1002 : 0x03282c,
     });
     const g = new THREE.Group();
-    const legL = new THREE.Group(); legL.position.set(-0.13, 0.58, 0);
-    const legR = new THREE.Group(); legR.position.set(0.13, 0.58, 0);
+    // One body part: a box of the given size/material placed in the body group.
+    const part = (w, h, d, mat, x, y, z, shadow = true) => {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+      m.position.set(x, y, z);
+      m.castShadow = shadow;
+      g.add(m);
+      return m;
+    };
+    const basic = (color) => new THREE.MeshBasicMaterial({ color });
     const legGeo = new THREE.BoxGeometry(0.17, 0.58, 0.17);
-    const legMeshL = new THREE.Mesh(legGeo, darkMat); legMeshL.position.y = -0.29; legMeshL.castShadow = true; legL.add(legMeshL);
-    const legMeshR = new THREE.Mesh(legGeo, darkMat); legMeshR.position.y = -0.29; legMeshR.castShadow = true; legR.add(legMeshR);
-    g.add(legL, legR);
-    const torso = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.62, 0.3), teamMat);
-    torso.position.y = 1.06;
-    torso.castShadow = true;
-    g.add(torso);
-    const vest = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.38, 0.36), darkMat);
-    vest.position.y = 1.1;
-    vest.castShadow = true;
-    g.add(vest);
+    const mkLeg = (sideX) => {
+      const pivot = new THREE.Group();
+      pivot.position.set(sideX, 0.58, 0);
+      const mesh = new THREE.Mesh(legGeo, darkMat);
+      mesh.position.y = -0.29;
+      mesh.castShadow = true;
+      pivot.add(mesh);
+      g.add(pivot);
+      return pivot;
+    };
+    const legL = mkLeg(-0.13);
+    const legR = mkLeg(0.13);
+    part(0.52, 0.62, 0.3, teamMat, 0, 1.06, 0); // torso
+    part(0.56, 0.38, 0.36, darkMat, 0, 1.1, 0); // vest
     // A lit team strip across the chest: friend-or-foe reads at a glance, even in silhouette.
-    const strip = new THREE.Mesh(
-      new THREE.BoxGeometry(0.34, 0.05, 0.02),
-      new THREE.MeshBasicMaterial({ color: c.team === 'ember' ? 0xff8a3c : 0x4de3ec }),
-    );
-    strip.position.set(0, 1.2, -0.19);
-    g.add(strip);
-    const head = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.3, 0.3), skinMat);
-    head.position.y = 1.58;
-    head.castShadow = true;
-    g.add(head);
-    const helmet = new THREE.Mesh(new THREE.BoxGeometry(0.37, 0.15, 0.37), teamMat);
-    helmet.position.y = 1.76;
-    g.add(helmet);
+    const glowCol = c.team === 'ember' ? 0xff8a3c : 0x4de3ec;
+    part(0.34, 0.05, 0.02, basic(glowCol), 0, 1.2, -0.19, false);
+    part(0.3, 0.3, 0.3, skinMat, 0, 1.58, 0); // head
+    part(0.37, 0.15, 0.37, teamMat, 0, 1.76, 0, false); // helmet
     // A lit visor slit and a team shoulder light: the head reads as gear, not a bare box.
-    const visor = new THREE.Mesh(
-      new THREE.BoxGeometry(0.3, 0.06, 0.02),
-      new THREE.MeshBasicMaterial({ color: c.team === 'ember' ? 0xffa050 : 0x6ff2fa }),
-    );
-    visor.position.set(0, 1.6, -0.16);
-    g.add(visor);
-    const pack = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.5, 0.16), darkMat);
-    pack.position.set(0, 1.12, 0.24);
-    pack.castShadow = true;
-    g.add(pack);
-    const shoulder = new THREE.Mesh(
-      new THREE.BoxGeometry(0.08, 0.05, 0.08),
-      new THREE.MeshBasicMaterial({ color: c.team === 'ember' ? 0xff8a3c : 0x4de3ec }),
-    );
-    shoulder.position.set(-0.31, 1.44, 0);
-    g.add(shoulder);
+    part(0.3, 0.06, 0.02, basic(c.team === 'ember' ? 0xffa050 : 0x6ff2fa), 0, 1.6, -0.16, false);
+    part(0.4, 0.5, 0.16, darkMat, 0, 1.12, 0.24); // backpack
+    part(0.08, 0.05, 0.08, basic(glowCol), -0.31, 1.44, 0, false);
     const armR = new THREE.Group(); armR.position.set(0.34, 1.34, 0);
     const armMesh = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.46, 0.13), teamMat);
     armMesh.position.set(0, -0.12, -0.12);
@@ -399,9 +516,9 @@ export function buildBotBodies(scene) {
     const mkGun = (parts, flashZ) => {
       const grp = new THREE.Group();
       for (const [w, h, d, x, y, z] of parts) {
-        const part = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), darkMat);
-        part.position.set(x, y, z);
-        grp.add(part);
+        const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), darkMat);
+        m.position.set(x, y, z);
+        grp.add(m);
       }
       const fl = new THREE.Mesh(
         new THREE.PlaneGeometry(0.4, 0.4),
