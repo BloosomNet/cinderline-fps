@@ -35,21 +35,17 @@
   .feed-row b.em { color: #ff9a4d; }
   .feed-row b.wa { color: #5fd6de; }
   .feed-row i { color: #ff5a4d; font-style: normal; font-weight: 700; font-size: 11px; }
-  #vitals {
-    position: absolute; left: 18px; bottom: 18px; padding: 8px 14px 10px 12px; border-radius: 8px;
+  #vitals, #weapon-box {
+    position: absolute; bottom: 18px; border-radius: 8px;
     background: linear-gradient(180deg, rgba(12,9,20,0.45), rgba(12,9,20,0.16));
-    border-left: 3px solid rgba(255,122,51,0.85);
   }
+  #vitals { left: 18px; padding: 8px 14px 10px 12px; border-left: 3px solid rgba(255,122,51,0.85); }
   #hp-bar { width: 220px; height: 14px; background: rgba(0,0,0,0.55); border: 1px solid rgba(255,255,255,0.3); border-radius: 3px; overflow: hidden; }
   #hp-fill { height: 100%; width: 100%; background: linear-gradient(90deg, #e8542f, #ff7a33); transition: width 0.15s; }
   #hp-fill.low { background: #ff3b30; }
   #hp-num { font-size: 34px; font-weight: 800; line-height: 1; text-shadow: 0 2px 6px rgba(0,0,0,0.8); }
   #armor-tag { font-size: 12px; font-weight: 700; letter-spacing: 1px; color: #9fd8e8; min-height: 14px; }
-  #weapon-box {
-    position: absolute; right: 18px; bottom: 18px; text-align: right; padding: 8px 12px 10px 14px; border-radius: 8px;
-    background: linear-gradient(180deg, rgba(12,9,20,0.45), rgba(12,9,20,0.16));
-    border-right: 3px solid rgba(255,176,46,0.8);
-  }
+  #weapon-box { right: 18px; text-align: right; padding: 8px 12px 10px 14px; border-right: 3px solid rgba(255,176,46,0.8); }
   #weapon-name { font-size: 14px; font-weight: 700; letter-spacing: 1px; color: #ffd9ae; }
   #ammo-line { font-size: 34px; font-weight: 800; line-height: 1.05; text-shadow: 0 2px 6px rgba(0,0,0,0.8); }
   #ammo-line.low { color: #ff5a4d; }
@@ -120,6 +116,13 @@
   .buy-row.poor .buy-price { color: #ff5a4d; }
   .buy-row.owned .buy-price { color: #9fd8e8; }
   #interact-hint { position: absolute; left: 50%; bottom: 19%; transform: translateX(-50%); font-size: 14px; font-weight: 700; color: #ffd9ae; text-shadow: 0 1px 5px #000; }
+  /* Repo watermark: bottom-centre is the one edge no HUD element claims. Above the menu
+     overlay too, so it shows in menu and gameplay alike. */
+  #repo-mark {
+    position: fixed; left: 50%; bottom: 6px; transform: translateX(-50%); z-index: 50;
+    font-size: 11.5px; color: rgba(255,255,255,0.55); text-shadow: 0 1px 2px rgba(0,0,0,0.85);
+    pointer-events: none;
+  }
   #center-msg { position: absolute; left: 50%; top: 58%; transform: translateX(-50%); font-size: 17px; font-weight: 700; color: #ff8a7a; text-shadow: 0 1px 6px #000; }
 
   /* ---------- start overlay ---------- */
@@ -148,8 +151,7 @@
   @media (pointer: coarse) {
     #look-layer { display: block; position: fixed; inset: 0; z-index: 15; touch-action: none; }
     #touch-ui { display: block; }
-    #vitals { bottom: 232px; }
-    #weapon-box { bottom: 232px; }
+    #vitals, #weapon-box { bottom: 232px; }
     #buy-panel { top: auto; bottom: 360px; }
     .tbtn {
       position: fixed; z-index: 25; display: flex; align-items: center; justify-content: center;
@@ -180,6 +182,7 @@
 </head>
 <body>
 <canvas id="game"></canvas>
+<div id="repo-mark">github.com/BloosomNet/cinderline-fps</div>
 <div id="look-layer"></div>
 <div id="hud">
   <canvas id="minimap" width="168" height="168"></canvas>
